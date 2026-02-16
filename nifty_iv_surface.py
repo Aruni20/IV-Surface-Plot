@@ -3,176 +3,115 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
+import json
+import os
 from datetime import datetime
-from scipy.interpolate import griddata
 
-# NSE API configuration
+# NSE Constants
 BASE_URL = "https://www.nseindia.com"
-LANDING_URL = "https://www.nseindia.com/option-chain"
 API_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+CACHE_FILE = "nifty_cache.json"
 
-headers = {
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.nseindia.com/option-chain",
     "X-Requested-With": "XMLHttpRequest"
 }
 
-class NSEOptionChain:
+class NSETracker:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update(headers)
+        self.session.headers.update(HEADERS)
         self.init_session()
 
     def init_session(self):
-        """Initializes the session to get cookies from NSE."""
         try:
             self.session.get(BASE_URL, timeout=10)
-            self.session.get(LANDING_URL, timeout=10)
-            print("Session initialized successfully.")
+            print("Session Initialized.")
         except Exception as e:
-            print(f"Error initializing session: {e}")
+            print(f"Init Error: {e}")
 
-    def fetch_data(self):
-        """Fetches the NIFTY option chain data."""
+    def fetch_real_data(self):
         try:
             response = self.session.get(API_URL, timeout=15)
+            if response.status_code == 200 and response.text.strip() != "{}":
+                data = response.json()
+                with open(CACHE_FILE, 'w') as f:
+                    json.dump(data, f)
+                return data, "LIVE"
             
-            # Check for empty response (cloud IP block)
-            if response.text.strip() == "{}" or response.status_code == 401:
-                print("Session expired or block detected. Re-initializing...")
-                self.init_session()
-                response = self.session.get(API_URL, timeout=15)
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, 'r') as f:
+                    return json.load(f), "CACHED"
             
-            if response.text.strip() == "{}":
-                return None, None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            records = data['records']['data']
-            price = data['records']['underlyingValue']
-            all_rows = []
+            return None, "BLOCKED"
+        except:
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, 'r') as f:
+                    return json.load(f), "CACHED"
+            return None, "ERROR"
 
-            for item in records:
-                expiry = item['expiryDate']
-                if 'CE' in item:
-                    ce = item['CE']
-                    if ce.get('impliedVolatility', 0) > 0:
-                        all_rows.append({
-                            "strike": ce['strikePrice'],
-                            "iv": ce['impliedVolatility'],
-                            "expiry": expiry
-                        })
-            
-            df = pd.DataFrame(all_rows)
-            if df.empty:
-                return None, price
-                
-            df['expiry'] = pd.to_datetime(df['expiry'])
-            today = pd.Timestamp.now().normalize()
-            df['days_to_expiry'] = (df['expiry'] - today).dt.days
-            
-            return df, price
-        except Exception as e:
-            print(f"Error fetching data: {e}")
-            return None, None
-
-def generate_mock_data():
-    """Generates realistic synthetic IV surface data if the live API is blocked."""
-    # Current NIFTY Spot as of Feb 2026
-    spot = 25539.0
-    strikes = np.linspace(spot * 0.90, spot * 1.10, 30)
-    expiries = np.array([3, 7, 14, 21, 30, 60, 90])
-    rows = []
-    for exp in expiries:
-        for strike in strikes:
-            moneyness = strike / spot
-            
-            # 1. Term Structure: IV decays over time
-            base_iv = 13.5 + (120 / (exp + 15))
-            
-            # 2. Volatility Smile/Skew (Sticky Strike Skew)
-            dist = (moneyness - 1.0)
-            skew = -45 * dist 
-            smile = 400 * (dist ** 2)
-            
-            iv = base_iv + skew + smile
-            iv = max(iv, 8.0)
-            
-            rows.append({"strike": strike, "iv": iv, "days_to_expiry": exp})
-    return pd.DataFrame(rows), spot
-
-def create_smooth_surface(df, spot, is_mock=False):
-    """Interpolates the sparse data into a smooth 3D surface."""
+def create_surface(df, spot, status):
     # Filter for strikes around spot
-    df = df[(df.strike > spot * 0.85) & (df.strike < spot * 1.15)]
+    df_p = df[(df.strike > spot * 0.8) & (df.strike < spot * 1.2)].copy()
     
-    grid_x, grid_z = np.meshgrid(
-        np.linspace(df.strike.min(), df.strike.max(), 100),
-        np.linspace(df.days_to_expiry.min(), df.days_to_expiry.max(), 100)
-    )
-
-    grid_y = griddata(
-        (df.strike, df.days_to_expiry),
-        df.iv,
-        (grid_x, grid_z),
-        method='cubic'
-    )
-
+    # Pivot for surface
+    pivot_df = df_p.pivot_table(index='days_to_expiry', columns='strike', values='iv', aggfunc='mean')
+    
     fig = go.Figure(data=[go.Surface(
-        x=grid_x,
-        y=grid_y,
-        z=grid_z,
+        x=pivot_df.columns,
+        y=pivot_df.index,
+        z=pivot_df.values,
         colorscale='Turbo',
-        colorbar_title="IV %",
-        hovertemplate="Strike: %{x}<br>Days: %{z}<br>IV: %{y:.2f}%<extra></extra>"
+        colorbar_title="IV %"
     )])
 
-    mode_text = "MOCK - API Blocked" if is_mock else "LIVE NSE DATA"
     fig.update_layout(
-        title={
-            'text': f"NIFTY Implied Volatility Surface ({mode_text})",
-            'y':0.95, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top',
-            'font': dict(size=24, color='white')
-        },
+        title=f"NIFTY REAL IV SURFACE - [{status} DATA] - Spot: {spot:.2f}",
         scene=dict(
-            xaxis_title="Strike Price", yaxis_title="IV %", zaxis_title="Days to Expiry",
-            xaxis=dict(gridcolor='grey', title_font=dict(color='white'), tickfont=dict(color='white')),
-            yaxis=dict(gridcolor='grey', title_font=dict(color='white'), tickfont=dict(color='white')),
-            zaxis=dict(gridcolor='grey', title_font=dict(color='white'), tickfont=dict(color='white')),
-            bgcolor='rgb(20, 20, 40)'
+            xaxis_title="Strike Price",
+            yaxis_title="Days to Expiry",
+            zaxis_title="Implied Volatility (IV %)",
+            zaxis=dict(range=[0, max(df_p.iv)+10])
         ),
-        paper_bgcolor='rgb(10, 10, 25)',
-        margin=dict(l=0, r=0, b=0, t=100),
         template='plotly_dark'
     )
-
     return fig
 
 def main():
-    print("Initializing NIFTY IV Surface Tracker...")
-    nse = NSEOptionChain()
+    tracker = NSETracker()
+    print("REAL DATA ONLY - Starting Tracker...")
     
     while True:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching data...")
-        df, spot = nse.fetch_data()
-        
-        is_mock = False
-        if df is None or df.empty:
-            print("API Block detected (common for cloud IPs). Using synthetic fallback...")
-            df, spot = generate_mock_data()
-            is_mock = True
+        raw_data, status = tracker.fetch_real_data()
+        if raw_data:
+            records = raw_data['records']['data']
+            spot = raw_data['records']['underlyingValue']
+            
+            rows = []
+            for item in records:
+                expiry = item['expiryDate']
+                for opt in ['CE', 'PE']:
+                    if opt in item and item[opt].get('impliedVolatility', 0) > 0:
+                        rows.append({
+                            "strike": item[opt]['strikePrice'],
+                            "iv": item[opt]['impliedVolatility'],
+                            "expiry_dt": pd.to_datetime(expiry)
+                        })
+            
+            df = pd.DataFrame(rows)
+            df['days_to_expiry'] = (df['expiry_dt'] - pd.Timestamp.now().normalize()).dt.days
+            df = df[df.days_to_expiry >= 0]
+            
+            print(f"Plotting {status} data from NSE. Spot: {spot}")
+            fig = create_surface(df, spot, status)
+            fig.show()
         else:
-            print(f"Live data received: {len(df)} records.")
-
-        fig = create_smooth_surface(df, spot, is_mock)
-        fig.show()
-        
-        print("Surface generated. Waiting 60 seconds...")
-        time.sleep(60)
+            print("Could not fetch data and no cache found. Please check internet or run from a local IP.")
+            
+        time.sleep(120)
 
 if __name__ == "__main__":
     main()
