@@ -96,6 +96,8 @@ def generate_mock_data():
     days = [3, 7, 14, 21, 30, 60, 90]
     rows = []
     for d in days:
+        # Create a unique mock expiry label for the dropdown
+        expiry_label = f"MOCK - {d} Days"
         for s in strikes:
             moneyness = s/spot
             base_iv = 15 + (100/(d+15))
@@ -103,8 +105,8 @@ def generate_mock_data():
             iv_ce = max(base_iv - 35*(moneyness-1) + 300*(moneyness-1)**2, 8)
             iv_pe = max(base_iv - 45*(moneyness-1) + 400*(moneyness-1)**2 + 1, 9)
             
-            rows.append({"strike": s, "iv": iv_ce, "days_to_expiry": d, "type": "CE", "expiry": "Mock"})
-            rows.append({"strike": s, "iv": iv_pe, "days_to_expiry": d, "type": "PE", "expiry": "Mock"})
+            rows.append({"strike": s, "iv": iv_ce, "days_to_expiry": d, "type": "CE", "expiry": expiry_label})
+            rows.append({"strike": s, "iv": iv_pe, "days_to_expiry": d, "type": "PE", "expiry": expiry_label})
     return pd.DataFrame(rows), spot, datetime.now().strftime("%d-%b-%Y")
 
 def main():
