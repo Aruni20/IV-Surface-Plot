@@ -117,74 +117,86 @@ def main():
             st.error("Scipy not found. Please ensure it is in requirements.txt")
             return
 
-        # Prepare 3D Plot - ANOMALY DETECTION MODE
+        # Prepare 3D Plot - QUANT STANDARD COORDINATES
         # Expand range to see tail-risk anomalies (25% range)
-        df_p = df[(df.strike > spot*0.85) & (df.strike < spot*1.15)].copy()
+        df_p = df[(df.strike > spot*0.80) & (df.strike < spot*1.20)].copy()
         
-        # --- ANOMALY DETECTION LOGIC ---
-        # Any point deviating significantly from its expiry's median IV
-        df_p['median_iv'] = df_p.groupby('days_to_expiry')['iv'].transform('median')
-        df_p['deviation'] = abs(df_p['iv'] - df_p['median_iv'])
-        # Threshold: 15% change in IV is considered an anomaly
-        df_p['is_anomaly'] = df_p['deviation'] > 15 
+        # --- REFINED ANOMALY DETECTION ---
+        # Compare IV to a rolling median within its own expiry to handle Skew naturally
+        df_p = df_p.sort_values(['days_to_expiry', 'strike'])
+        df_p['expiry_median'] = df_p.groupby('days_to_expiry')['iv'].transform(lambda x: x.rolling(window=5, center=True, min_periods=1).median())
+        df_p['is_anomaly'] = abs(df_p['iv'] - df_p['expiry_median']) > 12 # 12% absolute deviation from neighbor
         
         anomalies = df_p[df_p['is_anomaly']]
         normal_data = df_p[~df_p['is_anomaly']]
-        # -------------------------------
+        # ----------------------------------
 
-        df_p = df_p.sort_values(['days_to_expiry', 'strike'])
+        # Create pivot for the surface
         pivot_df = df_p.pivot_table(index='days_to_expiry', columns='strike', values='iv')
         
         x_strikes = pivot_df.columns.values
-        z_expiries = pivot_df.index.values
-        y_iv_matrix = pivot_df.values
+        y_exp_days = pivot_df.index.values
+        z_iv_matrix = pivot_df.values # Height is now the IV values
 
         fig = go.Figure()
 
-        # 1. Base Surface
+        # 1. Base Surface (X=Strike, Y=Time, Z=IV)
         fig.add_trace(go.Surface(
-            x=x_strikes, y=y_iv_matrix, z=z_expiries,
-            colorscale='Turbo', opacity=0.8, colorbar_title="IV %", hoverinfo='skip'
+            x=x_strikes, 
+            y=y_exp_days, 
+            z=z_iv_matrix,
+            colorscale='Turbo', 
+            opacity=0.85, 
+            colorbar_title="IV %",
+            hovertemplate="Strike: %{x}<br>Days: %{y}<br>IV: %{z:.2f}%<extra></extra>"
         ))
 
-        # 2. Normal Data Points
+        # 2. Normal Data Markers (Z is height)
         fig.add_trace(go.Scatter3d(
-            x=normal_data['strike'], y=normal_data['iv'], z=normal_data['days_to_expiry'],
+            x=normal_data['strike'], 
+            y=normal_data['days_to_expiry'], 
+            z=normal_data['iv'],
             mode='markers',
-            marker=dict(size=3, color='rgba(255,255,255,0.4)', line=dict(color='white', width=0.1)),
+            marker=dict(size=2, color='white', opacity=0.3),
             name="Normal Points"
         ))
 
-        # 3. ANOMALY HIGHLIGHTS (The Glowing Markers)
+        # 3. ANOMALY HIGHLIGHTS (Magenta Diamonds on Height)
         if not anomalies.empty:
             fig.add_trace(go.Scatter3d(
-                x=anomalies['strike'], y=anomalies['iv'], z=anomalies['days_to_expiry'],
-                mode='markers+text',
-                marker=dict(
-                    size=8, 
-                    color='magenta', 
-                    symbol='diamond',
-                    line=dict(color='white', width=2),
-                ),
-                text=["⚠️ SPIKE" for _ in range(len(anomalies))],
-                textposition="top center",
-                name="Detected Anomalies",
-                hovertemplate="<b>ANOMALY DETECTED</b><br>Strike: %{x}<br>IV: %{y:.2f}%<br>Days: %{z}<extra></extra>"
+                x=anomalies['strike'], 
+                y=anomalies['days_to_expiry'], 
+                z=anomalies['iv'],
+                mode='markers',
+                marker=dict(size=7, color='magenta', symbol='diamond', line=dict(color='white', width=1)),
+                name="Spikes Detected",
+                hovertemplate="<b>ANOMALY</b><br>Strike: %{x}<br>Days: %{y}<br>IV: %{z:.2f}%<extra></extra>"
             ))
 
         fig.update_layout(
-            title=f"NIFTY IV Surface - Anomaly Detection Active ({len(anomalies)} Found)",
-            scene=dict(
-                xaxis_title="Strike Price", yaxis_title="IV %", zaxis_title="Days to Expiry",
-                xaxis=dict(gridcolor='#444'), yaxis=dict(gridcolor='#444'), zaxis=dict(gridcolor='#444'),
+            title=dict(
+                text=f"NIFTY IV Surface - Standard Height Mapping ({len(anomalies)} Outliers Detected)",
+                x=0.5, font=dict(size=20, color='#00f2fe')
             ),
-            paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, b=0, t=40), height=800, template='plotly_dark'
+            scene=dict(
+                xaxis_title="Strike Price",
+                yaxis_title="Days to Expiry",
+                zaxis_title="Implied Volatility (IV %)",
+                xaxis=dict(gridcolor='#444', spikecolor="#00f2fe"),
+                yaxis=dict(gridcolor='#444', spikecolor="#00f2fe"),
+                zaxis=dict(gridcolor='#444', spikecolor="#00f2fe", range=[min(df_p.iv)-5, max(df_p.iv)+10]),
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)) # Better initial angle
+            ),
+            paper_bgcolor='rgba(0,0,0,0)', 
+            margin=dict(l=0, r=0, b=0, t=60), 
+            height=800, 
+            template='plotly_dark'
         )
         
         st.plotly_chart(fig, use_container_width=True)
 
         if not anomalies.empty:
-            st.warning(f"Detected {len(anomalies)} anomalies in the option chain. These appear as Magenta Diamonds in the 3D plot.")
+            st.warning(f"Detected {len(anomalies)} sharp IV anomalies. High spikes in magenta often indicate illiquidity or arbitrage gap.")
 
         st.write("---")
         st.markdown("### 📉 2D Term Structure Analysis (IV vs Expiry)")
