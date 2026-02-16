@@ -129,30 +129,39 @@ def main():
         st.write("---")
 
         # --- NEW 2D REAL VALUE PLOT ABOVE ---
-        st.markdown("### 🎯 Raw IV Smile (Nearest Expiry - Real Values)")
+        st.markdown("### 🎯 Raw IV Smile (Select Expiry - Real Values)")
         
-        # Filter for the most liquid (nearest) expiry
-        nearest_expiry_days = df['days_to_expiry'].min()
-        df_near = df[df['days_to_expiry'] == nearest_expiry_days]
-        near_date = df_near['expiry'].iloc[0] if isinstance(df_near['expiry'].iloc[0], datetime) else "Nearest"
+        # Get all unique expiries for the dropdown
+        # Convert to string for display, but keep track of sorting
+        unique_expiries = sorted(df['expiry'].unique())
+        expiry_options = [str(pd.to_datetime(e).date()) if not isinstance(e, str) else e for e in unique_expiries]
+        
+        col_exp, col_stat = st.columns([1, 2])
+        with col_exp:
+            selected_expiry_str = st.selectbox("Select Expiry for Raw Smile:", expiry_options, index=0)
+            selected_expiry = unique_expiries[expiry_options.index(selected_expiry_str)]
+        
+        # Filter for the selected expiry
+        df_near = df[df['expiry'] == selected_expiry]
 
         fig_smile = go.Figure()
         
         # Plot CE and PE separately to show "Real Values" not average
         for opt_type, color in [("CE", "#00f2fe"), ("PE", "#ff00ff")]:
             df_type = df_near[df_near['type'] == opt_type]
-            fig_smile.add_trace(go.Scatter(
-                x=df_type['strike'], 
-                y=df_type['iv'], 
-                mode='markers+lines',
-                name=f"Real {opt_type} IV",
-                line=dict(color=color, width=1, dash='dot'),
-                marker=dict(size=8, color=color, symbol='circle' if opt_type == "CE" else 'x'),
-                hovertemplate=f"{opt_type} Strike: %{{x}}<br>IV: %{{y:.2f}}%<extra></extra>"
-            ))
+            if not df_type.empty:
+                fig_smile.add_trace(go.Scatter(
+                    x=df_type['strike'], 
+                    y=df_type['iv'], 
+                    mode='markers+lines',
+                    name=f"Real {opt_type} IV",
+                    line=dict(color=color, width=1, dash='dot'),
+                    marker=dict(size=8, color=color, symbol='circle' if opt_type == "CE" else 'x'),
+                    hovertemplate=f"{opt_type} Strike: %{{x}}<br>IV: %{{y:.2f}}%<extra></extra>"
+                ))
 
         fig_smile.update_layout(
-            title=f"Actual IV for Expiry: {near_date} (No Averaging)",
+            title=f"Actual IV for Expiry: {selected_expiry_str} (No Averaging)",
             xaxis_title="Strike Price",
             yaxis_title="Implied Volatility (IV %)",
             height=400,
