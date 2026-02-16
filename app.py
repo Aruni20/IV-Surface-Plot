@@ -117,29 +117,67 @@ def main():
             st.error("Scipy not found. Please ensure it is in requirements.txt")
             return
 
-        # Prepare 3D Plot
-        df_p = df[(df.strike > spot*0.88) & (df.strike < spot*1.12)]
+        # Prepare 3D Plot - RAW DATA MODE
+        # We pivot the data to use only actual Strikes and Expiries
+        df_p = df[(df.strike > spot*0.92) & (df.strike < spot*1.08)].copy()
         
-        grid_x, grid_z = np.meshgrid(
-            np.linspace(df_p.strike.min(), df_p.strike.max(), 50),
-            np.linspace(df_p.days_to_expiry.min(), df_p.days_to_expiry.max(), 50)
-        )
+        # Sort to ensure proper grid alignment
+        df_p = df_p.sort_values(['days_to_expiry', 'strike'])
         
-        grid_y = griddata(
-            (df_p.strike, df_p.days_to_expiry),
-            df_p.iv,
-            (grid_x, grid_z),
-            method='cubic'
-        )
+        # Create a pivot for the surface
+        # index = Expiry (Z), columns = Strike (X), values = IV (Y)
+        pivot_df = df_p.pivot_table(index='days_to_expiry', columns='strike', values='iv')
+        
+        # Actual coordinates
+        x_strikes = pivot_df.columns.values
+        z_expiries = pivot_df.index.values
+        y_iv_matrix = pivot_df.values
 
-        fig = go.Figure(data=[go.Surface(x=grid_x, y=grid_y, z=grid_z, colorscale='Turbo')])
-        fig.update_layout(
-            scene=dict(
-                xaxis_title="Strike", yaxis_title="IV %", zaxis_title="Days",
-                xaxis=dict(gridcolor='#444'), yaxis=dict(gridcolor='#444'), zaxis=dict(gridcolor='#444'),
-                bgcolor='rgba(0,0,0,0)'
+        # 3D Surface using actual points
+        fig = go.Figure()
+
+        # Add the Surface
+        fig.add_trace(go.Surface(
+            x=x_strikes,
+            y=y_iv_matrix,
+            z=z_expiries,
+            colorscale='Turbo',
+            opacity=0.9,
+            colorbar_title="IV %",
+            hoverinfo='skip' # Let markers handle hover
+        ))
+
+        # Add Scatter3d to highlight EXPRESSED data points (the actual dots)
+        fig.add_trace(go.Scatter3d(
+            x=df_p['strike'],
+            y=df_p['iv'],
+            z=df_p['days_to_expiry'],
+            mode='markers',
+            marker=dict(
+                size=4,
+                color=df_p['iv'],
+                colorscale='Turbo',
+                opacity=1.0,
+                line=dict(color='white', width=0.5)
             ),
-            paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,b=0,t=0), height=700, template='plotly_dark'
+            hovertemplate="Strike: %{x}<br>IV: %{y:.2f}%<br>Days: %{z}<extra></extra>"
+        ))
+
+        fig.update_layout(
+            title="Raw NIFTY IV Surface (Actual Points Only)",
+            scene=dict(
+                xaxis_title="Strike Price",
+                yaxis_title="Implied Volatility (IV %)",
+                zaxis_title="Days to Expiry",
+                xaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
+                yaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
+                zaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
+            ),
+            paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=0, r=0, b=0, t=40),
+            height=800,
+            showlegend=False,
+            template='plotly_dark'
         )
         
         st.plotly_chart(fig, use_container_width=True)
