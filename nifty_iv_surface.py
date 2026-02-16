@@ -82,15 +82,26 @@ class NSEOptionChain:
 
 def generate_mock_data():
     """Generates realistic synthetic IV surface data if the live API is blocked."""
-    spot = 23500.0
+    # Current NIFTY Spot as of Feb 2026
+    spot = 25539.0
     strikes = np.linspace(spot * 0.90, spot * 1.10, 30)
-    expiries = np.array([7, 14, 21, 30, 60, 90])
+    expiries = np.array([3, 7, 14, 21, 30, 60, 90])
     rows = []
     for exp in expiries:
         for strike in strikes:
-            dist = (strike - spot) / spot
-            base_iv = 12 + (100 / (exp + 10))
-            iv = base_iv + 500 * (dist ** 2) - 10 * dist 
+            moneyness = strike / spot
+            
+            # 1. Term Structure: IV decays over time
+            base_iv = 13.5 + (120 / (exp + 15))
+            
+            # 2. Volatility Smile/Skew (Sticky Strike Skew)
+            dist = (moneyness - 1.0)
+            skew = -45 * dist 
+            smile = 400 * (dist ** 2)
+            
+            iv = base_iv + skew + smile
+            iv = max(iv, 8.0)
+            
             rows.append({"strike": strike, "iv": iv, "days_to_expiry": exp})
     return pd.DataFrame(rows), spot
 

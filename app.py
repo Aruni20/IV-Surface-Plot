@@ -124,18 +124,33 @@ class NSETracker:
 
 def generate_fallback_data():
     """Generates realistic synthetic IV surface data for demonstration if API is blocked."""
-    spot = 23500.0  # Estimated spot
+    # Current NIFTY Spot as of Feb 2026
+    spot = 25539.0  
     strikes = np.linspace(spot * 0.90, spot * 1.10, 30)
-    expiries = np.array([7, 14, 21, 30, 60, 90])
+    # Weekly and Monthly expiries
+    expiries = np.array([3, 7, 14, 21, 30, 60, 90])
     
     rows = []
     for exp in expiries:
         for strike in strikes:
-            # Simplified IV Smile model: IV = base + (strike - spot)^2 * curvature
-            # Plus some term structure: IV is higher for shorter expiries
-            dist = (strike - spot) / spot
-            base_iv = 12 + (100 / (exp + 10))
-            iv = base_iv + 500 * (dist ** 2) - 10 * dist  # Smile + Skew
+            # Normalized distance from spot
+            moneyness = strike / spot
+            
+            # 1. Term Structure: IV decays over time (Short-dated is more volatile)
+            base_iv = 13.5 + (120 / (exp + 15))
+            
+            # 2. Volatility Smile/Skew: 
+            # Real NIFTY has 'Sticky Strike' Skew (higher IV for OTM Puts / lower strikes)
+            # Quadratic component (Smile) + Linear component (Skew)
+            dist = (moneyness - 1.0)
+            skew = -45 * dist # Negative skew: High IV for low strikes
+            smile = 400 * (dist ** 2) # Smile curvature
+            
+            iv = base_iv + skew + smile
+            
+            # Floor IV at 8% for realism
+            iv = max(iv, 8.0)
+            
             rows.append({
                 "strike": strike,
                 "iv": iv,
