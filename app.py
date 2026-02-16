@@ -117,70 +117,74 @@ def main():
             st.error("Scipy not found. Please ensure it is in requirements.txt")
             return
 
-        # Prepare 3D Plot - RAW DATA MODE
-        # We pivot the data to use only actual Strikes and Expiries
-        df_p = df[(df.strike > spot*0.92) & (df.strike < spot*1.08)].copy()
+        # Prepare 3D Plot - ANOMALY DETECTION MODE
+        # Expand range to see tail-risk anomalies (25% range)
+        df_p = df[(df.strike > spot*0.85) & (df.strike < spot*1.15)].copy()
         
-        # Sort to ensure proper grid alignment
+        # --- ANOMALY DETECTION LOGIC ---
+        # Any point deviating significantly from its expiry's median IV
+        df_p['median_iv'] = df_p.groupby('days_to_expiry')['iv'].transform('median')
+        df_p['deviation'] = abs(df_p['iv'] - df_p['median_iv'])
+        # Threshold: 15% change in IV is considered an anomaly
+        df_p['is_anomaly'] = df_p['deviation'] > 15 
+        
+        anomalies = df_p[df_p['is_anomaly']]
+        normal_data = df_p[~df_p['is_anomaly']]
+        # -------------------------------
+
         df_p = df_p.sort_values(['days_to_expiry', 'strike'])
-        
-        # Create a pivot for the surface
-        # index = Expiry (Z), columns = Strike (X), values = IV (Y)
         pivot_df = df_p.pivot_table(index='days_to_expiry', columns='strike', values='iv')
         
-        # Actual coordinates
         x_strikes = pivot_df.columns.values
         z_expiries = pivot_df.index.values
         y_iv_matrix = pivot_df.values
 
-        # 3D Surface using actual points
         fig = go.Figure()
 
-        # Add the Surface
+        # 1. Base Surface
         fig.add_trace(go.Surface(
-            x=x_strikes,
-            y=y_iv_matrix,
-            z=z_expiries,
-            colorscale='Turbo',
-            opacity=0.9,
-            colorbar_title="IV %",
-            hoverinfo='skip' # Let markers handle hover
+            x=x_strikes, y=y_iv_matrix, z=z_expiries,
+            colorscale='Turbo', opacity=0.8, colorbar_title="IV %", hoverinfo='skip'
         ))
 
-        # Add Scatter3d to highlight EXPRESSED data points (the actual dots)
+        # 2. Normal Data Points
         fig.add_trace(go.Scatter3d(
-            x=df_p['strike'],
-            y=df_p['iv'],
-            z=df_p['days_to_expiry'],
+            x=normal_data['strike'], y=normal_data['iv'], z=normal_data['days_to_expiry'],
             mode='markers',
-            marker=dict(
-                size=4,
-                color=df_p['iv'],
-                colorscale='Turbo',
-                opacity=1.0,
-                line=dict(color='white', width=0.5)
-            ),
-            hovertemplate="Strike: %{x}<br>IV: %{y:.2f}%<br>Days: %{z}<extra></extra>"
+            marker=dict(size=3, color='rgba(255,255,255,0.4)', line=dict(color='white', width=0.1)),
+            name="Normal Points"
         ))
+
+        # 3. ANOMALY HIGHLIGHTS (The Glowing Markers)
+        if not anomalies.empty:
+            fig.add_trace(go.Scatter3d(
+                x=anomalies['strike'], y=anomalies['iv'], z=anomalies['days_to_expiry'],
+                mode='markers+text',
+                marker=dict(
+                    size=8, 
+                    color='magenta', 
+                    symbol='diamond',
+                    line=dict(color='white', width=2),
+                ),
+                text=["⚠️ SPIKE" for _ in range(len(anomalies))],
+                textposition="top center",
+                name="Detected Anomalies",
+                hovertemplate="<b>ANOMALY DETECTED</b><br>Strike: %{x}<br>IV: %{y:.2f}%<br>Days: %{z}<extra></extra>"
+            ))
 
         fig.update_layout(
-            title="Raw NIFTY IV Surface (Actual Points Only)",
+            title=f"NIFTY IV Surface - Anomaly Detection Active ({len(anomalies)} Found)",
             scene=dict(
-                xaxis_title="Strike Price",
-                yaxis_title="Implied Volatility (IV %)",
-                zaxis_title="Days to Expiry",
-                xaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
-                yaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
-                zaxis=dict(gridcolor='#444', backgroundcolor='rgb(10,10,20)'),
+                xaxis_title="Strike Price", yaxis_title="IV %", zaxis_title="Days to Expiry",
+                xaxis=dict(gridcolor='#444'), yaxis=dict(gridcolor='#444'), zaxis=dict(gridcolor='#444'),
             ),
-            paper_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=0, r=0, b=0, t=40),
-            height=800,
-            showlegend=False,
-            template='plotly_dark'
+            paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=0, b=0, t=40), height=800, template='plotly_dark'
         )
         
         st.plotly_chart(fig, use_container_width=True)
+
+        if not anomalies.empty:
+            st.warning(f"Detected {len(anomalies)} anomalies in the option chain. These appear as Magenta Diamonds in the 3D plot.")
 
         st.write("---")
         st.markdown("### 📉 2D Term Structure Analysis (IV vs Expiry)")
