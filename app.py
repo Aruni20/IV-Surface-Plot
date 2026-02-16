@@ -181,8 +181,56 @@ def main():
         )
         
         st.plotly_chart(fig, use_container_width=True)
+
+        st.write("---")
+        st.markdown("### 📉 2D Term Structure Analysis (IV vs Expiry)")
         
-        if st.button("Manual Refresh"):
+        # Get unique strikes for the dropdown
+        unique_strikes = sorted(df['strike'].unique())
+        
+        # Find strike closest to spot to set as default
+        closest_strike = min(unique_strikes, key=lambda x:abs(x-spot))
+        
+        col_sel, col_info = st.columns([1, 2])
+        with col_sel:
+            selected_strike = st.selectbox("Select Strike Price for Term Structure:", unique_strikes, index=unique_strikes.index(closest_strike))
+        
+        with col_info:
+            st.info(f"Visualizing how Implied Volatility changes over time for Strike {selected_strike:,.0f}.")
+
+        # Filter for selected strike
+        df_strike = df[df['strike'] == selected_strike].sort_values('days_to_expiry')
+
+        if not df_strike.empty:
+            fig2d = go.Figure()
+            
+            # Add line + markers
+            fig2d.add_trace(go.Scatter(
+                x=df_strike['days_to_expiry'],
+                y=df_strike['iv'],
+                mode='lines+markers',
+                line=dict(color='#00f2fe', width=3),
+                marker=dict(size=10, color='#4facfe', symbol='diamond'),
+                hovertemplate="Days: %{x}<br>IV: %{y:.2f}%<extra></extra>"
+            ))
+
+            fig2d.update_layout(
+                xaxis_title="Days to Expiry",
+                yaxis_title="Implied Volatility (IV %)",
+                height=450,
+                template='plotly_dark',
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(10,10,25,0.5)',
+                xaxis=dict(gridcolor='#333', zeroline=False),
+                yaxis=dict(gridcolor='#333', zeroline=False),
+                margin=dict(l=0, r=0, b=0, t=20)
+            )
+            
+            st.plotly_chart(fig2d, use_container_width=True)
+        else:
+            st.warning(f"No specific data points available for strike {selected_strike}.")
+
+        if st.button("Refresh Live Data"):
             st.cache_resource.clear()
             st.rerun()
 
