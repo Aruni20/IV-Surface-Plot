@@ -64,11 +64,21 @@ def fetch_nse_data():
         
         all_rows = []
         for item in records:
+            expiry = item['expiryDate']
+            # Fetch both CE and PE for 'Real Value' analysis
             if 'CE' in item and item['CE'].get('impliedVolatility', 0) > 0:
                 all_rows.append({
                     "strike": item['CE']['strikePrice'],
                     "iv": item['CE']['impliedVolatility'],
-                    "expiry": item['expiryDate']
+                    "expiry": expiry,
+                    "type": "CE"
+                })
+            if 'PE' in item and item['PE'].get('impliedVolatility', 0) > 0:
+                all_rows.append({
+                    "strike": item['PE']['strikePrice'],
+                    "iv": item['PE']['impliedVolatility'],
+                    "expiry": expiry,
+                    "type": "PE"
                 })
         
         df = pd.DataFrame(all_rows)
@@ -83,13 +93,18 @@ def fetch_nse_data():
 def generate_mock_data():
     spot = 25539.0
     strikes = np.linspace(spot * 0.9, spot * 1.1, 30)
-    days = [7, 14, 21, 30, 60, 90]
+    days = [3, 7, 14, 21, 30, 60, 90]
     rows = []
     for d in days:
         for s in strikes:
             moneyness = s/spot
-            iv = 15 + (100/(d+15)) - 40*(moneyness-1) + 350*(moneyness-1)**2
-            rows.append({"strike": s, "iv": max(iv, 8), "days_to_expiry": d})
+            base_iv = 15 + (100/(d+15))
+            # Real skew: PE IV usually trades higher than CE IV for OTM
+            iv_ce = max(base_iv - 35*(moneyness-1) + 300*(moneyness-1)**2, 8)
+            iv_pe = max(base_iv - 45*(moneyness-1) + 400*(moneyness-1)**2 + 1, 9)
+            
+            rows.append({"strike": s, "iv": iv_ce, "days_to_expiry": d, "type": "CE", "expiry": "Mock"})
+            rows.append({"strike": s, "iv": iv_pe, "days_to_expiry": d, "type": "PE", "expiry": "Mock"})
     return pd.DataFrame(rows), spot, datetime.now().strftime("%d-%b-%Y")
 
 def main():
@@ -111,6 +126,43 @@ def main():
         m2.markdown(f'<div class="metric-card"><h4>Timestamp</h4><h2>{ts}</h2></div>', unsafe_allow_html=True)
         m3.markdown(f'<div class="metric-card"><h4>Data Mode</h4><h2>{mode}</h2></div>', unsafe_allow_html=True)
         
+        st.write("---")
+
+        # --- NEW 2D REAL VALUE PLOT ABOVE ---
+        st.markdown("### 🎯 Raw IV Smile (Nearest Expiry - Real Values)")
+        
+        # Filter for the most liquid (nearest) expiry
+        nearest_expiry_days = df['days_to_expiry'].min()
+        df_near = df[df['days_to_expiry'] == nearest_expiry_days]
+        near_date = df_near['expiry'].iloc[0] if isinstance(df_near['expiry'].iloc[0], datetime) else "Nearest"
+
+        fig_smile = go.Figure()
+        
+        # Plot CE and PE separately to show "Real Values" not average
+        for opt_type, color in [("CE", "#00f2fe"), ("PE", "#ff00ff")]:
+            df_type = df_near[df_near['type'] == opt_type]
+            fig_smile.add_trace(go.Scatter(
+                x=df_type['strike'], 
+                y=df_type['iv'], 
+                mode='markers+lines',
+                name=f"Real {opt_type} IV",
+                line=dict(color=color, width=1, dash='dot'),
+                marker=dict(size=8, color=color, symbol='circle' if opt_type == "CE" else 'x'),
+                hovertemplate=f"{opt_type} Strike: %{{x}}<br>IV: %{{y:.2f}}%<extra></extra>"
+            ))
+
+        fig_smile.update_layout(
+            title=f"Actual IV for Expiry: {near_date} (No Averaging)",
+            xaxis_title="Strike Price",
+            yaxis_title="Implied Volatility (IV %)",
+            height=400,
+            template='plotly_dark',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(10,10,25,0.5)',
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=0, r=0, b=0, t=50)
+        )
+        st.plotly_chart(fig_smile, use_container_width=True)
         st.write("---")
 
         if not SCIPY_AVAILABLE:
