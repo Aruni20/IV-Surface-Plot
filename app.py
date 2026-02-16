@@ -55,7 +55,7 @@ BASE_URL = "https://www.nseindia.com"
 LANDING_URL = "https://www.nseindia.com/option-chain"
 API_URL = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
 
-headers = {
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -64,180 +64,165 @@ headers = {
     "X-Requested-With": "XMLHttpRequest"
 }
 
-class NSETracker:
-    def __init__(self):
-        if 'session' not in st.session_state:
-            st.session_state.session = requests.Session()
-            st.session_state.session.headers.update(headers)
-            self.refresh_session()
+@st.cache_resource
+def get_session():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        session.get(BASE_URL, timeout=10)
+        session.get(LANDING_URL, timeout=10)
+    except:
+        pass
+    return session
 
-    def refresh_session(self):
-        try:
-            # Visit homepage and landing page to get cookies
-            st.session_state.session.get(BASE_URL, timeout=10)
-            st.session_state.session.get(LANDING_URL, timeout=10)
-        except:
-            pass
-
-    def fetch_data(self):
-        try:
-            response = st.session_state.session.get(API_URL, timeout=15)
+def fetch_data():
+    session = get_session()
+    try:
+        response = session.get(API_URL, timeout=15)
+        
+        # If response is empty, it's likely a cloud-IP block
+        if response.text.strip() == "{}" or response.status_code == 401:
+            # Re-init session cookies
+            session.get(BASE_URL, timeout=10)
+            session.get(LANDING_URL, timeout=10)
+            response = session.get(API_URL, timeout=15)
             
-            # If response is empty, it's likely a cloud-IP block by Akamai
-            if response.text.strip() == "{}" or response.status_code == 401:
-                self.refresh_session()
-                response = st.session_state.session.get(API_URL, timeout=15)
-                
-            if response.text.strip() == "{}":
-                return None, None, None, "API Blocked (Cloud IP Detection)"
-                
-            response.raise_for_status()
-            data = response.json()
+        if response.text.strip() == "{}":
+            return None, None, None, "API Blocked (Cloud IP Detection)"
             
-            if 'records' not in data:
-                return None, None, None, "No 'records' key found"
-                
-            records = data['records']['data']
-            price = data['records']['underlyingValue']
-            timestamp = data['records']['timestamp']
+        response.raise_for_status()
+        data = response.json()
+        
+        if 'records' not in data:
+            return None, None, None, "No 'records' key found"
             
-            all_rows = []
-            for item in records:
-                expiry = item['expiryDate']
-                if 'CE' in item:
-                    ce = item['CE']
-                    if ce.get('impliedVolatility', 0) > 0:
-                        all_rows.append({
-                            "strike": ce['strikePrice'],
-                            "iv": ce['impliedVolatility'],
-                            "expiry": expiry
-                        })
+        records = data['records']['data']
+        price = data['records']['underlyingValue']
+        timestamp = data['records']['timestamp']
+        
+        all_rows = []
+        for item in records:
+            expiry = item['expiryDate']
+            if 'CE' in item:
+                ce = item['CE']
+                if ce.get('impliedVolatility', 0) > 0:
+                    all_rows.append({
+                        "strike": ce['strikePrice'],
+                        "iv": ce['impliedVolatility'],
+                        "expiry": expiry
+                    })
+        
+        df = pd.DataFrame(all_rows)
+        if df.empty:
+            return None, price, timestamp, "No IV data found in records"
             
-            df = pd.DataFrame(all_rows)
-            df['expiry'] = pd.to_datetime(df['expiry'])
-            today = pd.Timestamp.now().normalize()
-            df['days_to_expiry'] = (df['expiry'] - today).dt.days
-            
-            return df, price, timestamp, "Live Data Active"
-        except Exception as e:
-            return None, None, None, f"Error: {str(e)}"
+        df['expiry'] = pd.to_datetime(df['expiry'])
+        today = pd.Timestamp.now().normalize()
+        df['days_to_expiry'] = (df['expiry'] - today).dt.days
+        
+        return df, price, timestamp, "Live Data Active"
+    except Exception as e:
+        return None, None, None, f"Error: {str(e)}"
 
 def generate_fallback_data():
-    """Generates realistic synthetic IV surface data for demonstration if API is blocked."""
-    # Current NIFTY Spot as of Feb 2026
+    """Generates realistic synthetic IV surface data for demonstration."""
     spot = 25539.0  
     strikes = np.linspace(spot * 0.90, spot * 1.10, 30)
-    # Weekly and Monthly expiries
     expiries = np.array([3, 7, 14, 21, 30, 60, 90])
     
     rows = []
     for exp in expiries:
         for strike in strikes:
-            # Normalized distance from spot
             moneyness = strike / spot
-            
-            # 1. Term Structure: IV decays over time (Short-dated is more volatile)
             base_iv = 13.5 + (120 / (exp + 15))
-            
-            # 2. Volatility Smile/Skew: 
-            # Real NIFTY has 'Sticky Strike' Skew (higher IV for OTM Puts / lower strikes)
-            # Quadratic component (Smile) + Linear component (Skew)
             dist = (moneyness - 1.0)
-            skew = -45 * dist # Negative skew: High IV for low strikes
-            smile = 400 * (dist ** 2) # Smile curvature
-            
-            iv = base_iv + skew + smile
-            
-            # Floor IV at 8% for realism
-            iv = max(iv, 8.0)
-            
-            rows.append({
-                "strike": strike,
-                "iv": iv,
-                "days_to_expiry": exp
-            })
+            skew = -45 * dist
+            smile = 400 * (dist ** 2)
+            iv = max(base_iv + skew + smile, 8.0)
+            rows.append({"strike": strike, "iv": iv, "days_to_expiry": exp})
     
     return pd.DataFrame(rows), spot, datetime.now().strftime("%d-%b-%Y %H:%M:%S")
 
 def main():
     st.markdown("<h1>NIFTY Live 3D Volatility Surface</h1>", unsafe_allow_html=True)
     
-    tracker = NSETracker()
-    
-    metrics_placeholder = st.empty()
-    chart_placeholder = st.empty()
-    status_placeholder = st.empty()
-    
     # Try fetching real data
-    df, spot_price, ts, status = tracker.fetch_data()
+    df, spot_price, ts, status_msg = fetch_data()
     
     is_fallback = False
     if df is None or df.empty:
         df, spot_price, ts = generate_fallback_data()
         is_fallback = True
-        status += " | Using Synthetic Fallback (Cloud IP Detected)"
+        mode_label = "MOCK"
+        status_display = status_msg + " | Using Synthetic Fallback"
+    else:
+        mode_label = "LIVE"
+        status_display = status_msg
 
-    with metrics_placeholder.container():
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown(f'<div class="metric-card"><h3>NIFTY Spot</h3><h2>{spot_price:,.2f}</h2></div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown(f'<div class="metric-card"><h3>Last Updated</h3><h2>{ts}</h2></div>', unsafe_allow_html=True)
-        with col3:
-            st.markdown(f'<div class="metric-card"><h3>Mode</h3><h2>{"MOCK" if is_fallback else "LIVE"}</h2></div>', unsafe_allow_html=True)
+    # Dashboard Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f'<div class="metric-card"><h3>NIFTY Spot</h3><h2>{spot_price:,.2f}</h2></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-card"><h3>Last Updated</h3><h2>{ts}</h2></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-card"><h3>Data Mode</h3><h2>{mode_label}</h2></div>', unsafe_allow_html=True)
     
-    status_placeholder.markdown(f'<p class="status-msg">{status}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="status-msg">{status_display}</p>', unsafe_allow_html=True)
 
     # Filter range for strike prices near spot
     strike_range = 0.15
     df_filtered = df[(df['strike'] > spot_price * (1-strike_range)) & (df['strike'] < spot_price * (1+strike_range))]
     
-    # Interpolation
-    grid_x, grid_z = np.meshgrid(
-        np.linspace(df_filtered.strike.min(), df_filtered.strike.max(), 60),
-        np.linspace(df_filtered.days_to_expiry.min(), df_filtered.days_to_expiry.max(), 60)
-    )
+    if len(df_filtered) > 10:
+        # Interpolation
+        grid_x, grid_z = np.meshgrid(
+            np.linspace(df_filtered.strike.min(), df_filtered.strike.max(), 60),
+            np.linspace(df_filtered.days_to_expiry.min(), df_filtered.days_to_expiry.max(), 60)
+        )
 
-    grid_y = griddata(
-        (df_filtered.strike, df_filtered.days_to_expiry),
-        df_filtered.iv,
-        (grid_x, grid_z),
-        method='cubic'
-    )
+        grid_y = griddata(
+            (df_filtered.strike, df_filtered.days_to_expiry),
+            df_filtered.iv,
+            (grid_x, grid_z),
+            method='cubic'
+        )
 
-    fig = go.Figure(data=[go.Surface(
-        x=grid_x,
-        y=grid_y,
-        z=grid_z,
-        colorscale='Turbo',
-        colorbar_title="IV %",
-        hovertemplate="Strike: %{x}<br>Days: %{z}<br>IV: %{y:.2f}%<extra></extra>"
-    )])
+        fig = go.Figure(data=[go.Surface(
+            x=grid_x,
+            y=grid_y,
+            z=grid_z,
+            colorscale='Turbo',
+            colorbar_title="IV %",
+            hovertemplate="Strike: %{x}<br>Days: %{z}<br>IV: %{y:.2f}%<extra></extra>"
+        )])
 
-    fig.update_layout(
-        scene=dict(
-            xaxis_title="Strike Price",
-            yaxis_title="Implied Volatility (IV %)",
-            zaxis_title="Days to Expiry",
-            xaxis=dict(gridcolor='#444', title_font=dict(size=14)),
-            yaxis=dict(gridcolor='#444', title_font=dict(size=14)),
-            zaxis=dict(gridcolor='#444', title_font=dict(size=14)),
-            bgcolor='rgba(0,0,0,0)'
-        ),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, b=0, t=0),
-        height=700,
-        template='plotly_dark'
-    )
-    
-    with chart_placeholder:
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="Strike Price",
+                yaxis_title="IV %",
+                zaxis_title="Days to Expiry",
+                xaxis=dict(gridcolor='#444'),
+                yaxis=dict(gridcolor='#444'),
+                zaxis=dict(gridcolor='#444'),
+                bgcolor='rgba(0,0,0,0)'
+            ),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=0, r=0, b=0, t=0),
+            height=700,
+            template='plotly_dark'
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Insufficient data points to generate 3D surface.")
         
-    if st.button("Manual Refresh"):
+    if st.button("Refresh Live Data"):
+        st.cache_resource.clear()
         st.rerun()
-        
-    st.info("Note: NSE often blocks automated requests from cloud environments. If 'MOCK' mode is active, the data shown is a realistic simulation of the current market volatility smile. Run this locally for live NSE connectivity.")
+
+    st.info("Professional Perspective: This visualization shows the Volatility Surface where X=Strike, Y=IV, and Z=Time to Expiry (Days). Note: Cloud IPs are often blocked by NSE; switch to local execution for guaranteed live connectivity.")
 
 if __name__ == "__main__":
     main()
