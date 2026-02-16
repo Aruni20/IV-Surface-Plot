@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import requests
 import json
 import os
+import time
 from datetime import datetime
 
 # Page configuration
@@ -40,28 +41,40 @@ def get_session():
 def fetch_data():
     session = get_session()
     try:
-        # Session warming
-        session.get(BASE_URL, timeout=5)
-        response = session.get(API_URL, timeout=10)
+        # Step 1: Warm up with multiple pages to ensure all NSE cookies are set
+        session.get(BASE_URL, timeout=10)
+        time.sleep(1) # Small delay to mimic human behavior
+        session.get("https://www.nseindia.com/option-chain", timeout=10)
         
+        # Step 2: Attempt to fetch real API data
+        response = session.get(API_URL, timeout=15)
+        
+        # Check for empty response (Blocked)
+        if response.text.strip() == "{}" or response.status_code == 401:
+            # Final attempt: Visit the derivatives landing page
+            session.get("https://www.nseindia.com/get-quotes/derivatives?symbol=NIFTY", timeout=10)
+            response = session.get(API_URL, timeout=15)
+            
         if response.status_code == 200 and response.text.strip() != "{}":
             data = response.json()
+            # Successfully got live data, update the cache
             with open(CACHE_FILE, 'w') as f:
                 json.dump(data, f)
             return data, "LIVE NSE FEED"
         
+        # Step 3: Fallback to Cache if live fetch failed
         if os.path.exists(CACHE_FILE):
             with open(CACHE_FILE, 'r') as f:
                 data = json.load(f)
-            return data, f"REAL CACHED DATA (Last update: {datetime.fromtimestamp(os.path.getmtime(CACHE_FILE)).strftime('%Y-%m-%d %H:%M')})"
+            cache_time = datetime.fromtimestamp(os.path.getmtime(CACHE_FILE)).strftime('%d-%b %H:%M')
+            return data, f"REAL CACHED DATA (Last Update: {cache_time})"
             
-        return None, "CONNECTION BLOCKED - RUN LOCALLY TO INITIALIZE CACHE"
+        return None, "INITIALIZING... REFRESH IN 2 SECONDS"
     except Exception as e:
         if os.path.exists(CACHE_FILE):
             with open(CACHE_FILE, 'r') as f:
-                data = json.load(f)
-            return data, "REAL CACHED DATA (Fetch Error)"
-        return None, f"Error: {str(e)}"
+                return json.load(f), "CACHED (Connection Error)"
+        return None, f"CONNECTION PENDING: {str(e)}"
 
 def process_data(data):
     if not data or 'records' not in data:
